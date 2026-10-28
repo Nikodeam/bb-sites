@@ -1,12 +1,13 @@
 /* @meta
 {
   "name": "twitter/xchat",
-  "description": "List & read X (Twitter) DMs in the NEW encrypted chat UI (/i/chat). The legacy 1.1 DM API is dead for these conversations: messages arrive over an encrypted websocket and render inside shadow DOM, so this adapter uses shadow-piercing DOM extraction + SPA navigation instead of the REST API.",
+  "description": "List & read X (Twitter) DMs in the NEW encrypted chat UI (/i/chat), including media: photo/video attachments and shared-post (quote) cards are extracted with direct twimg URLs. The legacy 1.1 DM API is dead for these conversations: messages arrive over an encrypted websocket and render inside shadow DOM, so this adapter uses shadow-piercing DOM extraction + SPA navigation instead of the REST API.",
   "domain": "x.com",
   "args": {
     "conversation": {"required": false, "description": "list | conversation id (g123... or userA:userB) | /i/chat/... URL | exact conversation name. NOTE: the CLI maps values to args positionally in this declaration order, so keep this arg first."},
     "mode": {"required": false, "description": "list | read (default: read)"},
-    "scroll_rounds": {"required": false, "description": "Wheel-up rounds used to load older messages (default 6, max 20)"}
+    "scroll_rounds": {"required": false, "description": "Wheel-up rounds used to load older messages (default 6, max 20)"},
+    "fetch_media": {"required": false, "description": "For blob: (locally-decrypted) media, fetch and inline as data: URL (base64). Images and videos up to ~8MB each. Default: false (blob media reported as blob only)"}
   },
   "capabilities": ["network"],
   "readOnly": true,
@@ -147,7 +148,8 @@ async function(args) {
   }
 
   // ── pagination: wheel-up loads older messages (virtualized list) ─────
-  const wheelRounds = Math.min(parseInt(rounds) || 6, 20);
+  const wheelRounds = Math.min(Number.isFinite(parseInt(rounds)) ? Math.max(0, parseInt(rounds)) : 6, 20);
+  const wantBlobFetch = /^(1|true|yes)$/i.test(String(args.fetch_media || ''));
   const scroller = byId.get('dm-message-scroller');
   if (scroller) {
     for (let i = 0; i < wheelRounds && Date.now() - t0 < 15000; i++) {
@@ -155,31 +157,126 @@ async function(args) {
       scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -3000 }));
       await sleep(400);
     }
-    scroller.scrollTop = scroller.scrollHeight;
-    scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-    await sleep(300);
+    // No jump-to-bottom here: jumping triggers a full re-render race with the
+    // virtualized list. Extract whatever window is currently rendered — after
+    // wheel-ups that is a mix of older + newest messages, deduped below.
+    // Media cards (shared posts, photos, videos) hydrate later than the text
+    // nodes, so give the pane a moment and rescan before extraction.
+    await sleep(1500);
+    scan();
+    await sleep(700);
     scan();
   }
 
   // ── extraction ───────────────────────────────────────────────────────
+  // Each message renders as a `message-<uuid>` container holding the media
+  // (photos/videos render in their own containers — a media-only message has
+  // NO `message-text-<uuid>`) and, when there is text, a nested
+  // `message-text-<uuid>` span. Walk containers, not text nodes.
   // Sender: own bubbles use bg-chat-accent (+ items-end wrapper); incoming
   // messages use bg-secondary (+ items-start wrapper, avatar on first of group).
   const messages = [];
+  const seenUuids = new Set();
   for (const [tid, el] of byId) {
-    if (!tid.startsWith('message-text-')) continue;
-    const bubble = el.closest('[class*="rounded-chat"]');
-    const cls = bubble ? bubble.className : '';
-    let text = el.textContent || '';
-    let time;
-    const tm = text.match(/(.*?)(\d{1,2}:\d{2}(?:\s?[AP]M)?)\2\s*$/s);
-    if (tm) { text = tm[1]; time = tm[2]; }
-    text = text.trim();
-    let attachment;
-    if (bubble) {
-      const media = [...bubble.querySelectorAll('img,video')].filter(i => !/profile_images/.test(i.src || ''));
-      if (media.length) attachment = media.map(m => m.tagName.toLowerCase()).join(',');
+    if (!tid.startsWith('message-') || tid.startsWith('message-text-')) continue;
+    const uuid = tid.slice('message-'.length);
+    if (seenUuids.has(uuid)) continue;
+    seenUuids.add(uuid);
+
+    // sender via bubble class
+    let sender = 'other';
+    let bubble = null;
+    const bubbles = el.querySelectorAll ? [...el.querySelectorAll('[class*="rounded-chat"]')] : [];
+    for (const b of bubbles) { if ((b.className || '').includes('bg-chat-accent')) { sender = 'self'; bubble = b; break; } }
+    if (!bubble && bubbles.length) bubble = bubbles[0];
+
+    // media: any non-avatar img / video inside the container. Media wrapped in
+    // a status anchor belongs to a shared-post (quote) card; the rest is a
+    // direct attachment on this message.
+    const mediaItems = [];
+    const cardMediaItems = [];
+    const collectMedia = (el) => {
+      if (el.tagName === 'IMG') {
+        const src = el.currentSrc || el.src || '';
+        if (!src || src.includes('profile_images')) return;
+        const item = src.startsWith('blob:')
+          ? { type: 'photo', blob: src.slice(0, 60) }
+          : { type: 'photo', url: src, alt: el.alt && el.alt !== 'user avatar' ? el.alt : undefined };
+        (el.closest('a[href*="/status/"]') ? cardMediaItems : mediaItems).push(item);
+      } else if (el.tagName === 'VIDEO') {
+        const url = el.currentSrc || el.src || '';
+        if (url.startsWith('blob:')) { (el.closest('a[href*="/status/"]') ? cardMediaItems : mediaItems).push({ type: 'video', blob: url.slice(0, 60) }); return; }
+        (el.closest('a[href*="/status/"]') ? cardMediaItems : mediaItems).push({
+          type: 'video', url,
+          duration_s: isFinite(el.duration) && el.duration > 0 ? Math.round(el.duration) : undefined
+        });
+      }
+    };
+    const walkContainer = (root, d) => {
+      if (d > 30 || !root) return;
+      for (const child of root.querySelectorAll('*')) { collectMedia(child); if (child.shadowRoot) walkContainer(child.shadowRoot, d + 1); }
+    };
+    walkContainer(el, 0);
+
+    // text
+    let text = '', time;
+    const textEl = el.querySelector ? el.querySelector('[data-testid^="message-text-"]') : null;
+    if (textEl) {
+      text = textEl.textContent || '';
+      const tm = text.match(/(.*?)(\d{1,2}:\d{2}(?:\s?[AP]M)?)\2\s*$/s);
+      if (tm) { text = tm[1]; time = tm[2]; }
+      text = text.trim();
     }
-    messages.push({ request_id: tid.replace('message-text-', ''), text, sender: cls.includes('bg-chat-accent') ? 'self' : 'other', time: time || undefined, attachment });
+    if (!time) {
+      // media-only (or unrendered-text) messages: pull the clock time from the
+      // container text as a heuristic
+      const tm2 = (el.innerText || '').match(/(\d{1,2}:\d{2}(?:\s?[AP]M)?)(?=\s|$)/);
+      if (tm2) time = tm2[1];
+    }
+
+    // shared-post (quote) cards: status anchor + author profile anchor
+    let sharedPost = null;
+    const anchors = el.querySelectorAll ? [...el.querySelectorAll('a')].map(a => a.getAttribute('href') || '') : [];
+    const statusUrl = anchors.find(h => /^https?:\/\/x\.com\/[^/]+\/status\/\d+/.test(h));
+    if (statusUrl) {
+      const profileUrl = anchors.find(h => /^https?:\/\/x\.com\/[^/]+$/.test(h));
+      // card text = container text minus the message caption itself
+      let cardText = (el.innerText || '').replace(text, '').trim().replace(/\s+/g, ' ');
+      sharedPost = {
+        url: statusUrl,
+        author: profileUrl ? profileUrl.split('x.com/')[1].replace(/\/$/, '') : undefined,
+        text: cardText || undefined,
+        media: cardMediaItems.length ? cardMediaItems : undefined
+      };
+    }
+
+    // optional blob fetch (locally-decrypted media)
+    if (wantBlobFetch) {
+      for (const mi of [...mediaItems, ...cardMediaItems]) {
+        if (!mi.blob) continue;
+        const isVideo = mi.type === 'video';
+        const blobEl = [...(el.querySelectorAll ? el.querySelectorAll(isVideo ? 'video' : 'img') : [])].find(x => (x.currentSrc || x.src || '').startsWith('blob:'));
+        if (!blobEl) continue;
+        try {
+          const resp = await fetch(blobEl.currentSrc || blobEl.src);
+          const blob = await resp.blob();
+          if (blob.size <= 8 * 1024 * 1024) {
+            const dataUrl = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(blob); });
+            mi.data_url = dataUrl; mi.size = blob.size; delete mi.blob;
+          } else { mi.too_large = blob.size; }
+        } catch (e) { mi.fetch_error = String(e).slice(0, 80); }
+      }
+    }
+
+    const msg = { request_id: uuid, text: text || undefined, sender, time: time || undefined };
+    if (mediaItems.length) msg.media = mediaItems;
+    if (sharedPost) msg.shared_post = sharedPost;
+    const att = [];
+    if (mediaItems.length) att.push(...mediaItems.map(m => m.type));
+    if (cardMediaItems.length) att.push('card_media');
+    if (sharedPost) att.push('shared_post');
+    if (att.length) msg.attachment = att.join(',');
+    messages.push(msg);
   }
 
   const header = byId.get('dm-conversation-header');
