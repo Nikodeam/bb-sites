@@ -60,28 +60,27 @@ async function(args) {
 
   // ── inbox list ───────────────────────────────────────────────────────
   const listConversations = () => {
+    const timeRe = /^(?:\d+\s*[mhdw]|now|yesterday|today|just now)$/i;
     const out = [];
     for (const [tid, el] of byId) {
       if (!tid.startsWith('dm-conversation-item-')) continue;
       const id = tid.slice('dm-conversation-item-'.length);
       const a = el.tagName === 'A' ? el : el.querySelector('a');
       const href = a ? a.getAttribute('href') : null;
-      const desc = el.getAttribute('aria-description') || '';
-      const parts = desc.split(',').map(s => s.trim()).filter(Boolean);
-      let name, handle, preview, time;
-      const timeRe = /^(?:\d+[mhdw]|now|yesterday|today)$/i;
-      if (parts.length >= 2 && parts[1].startsWith('@')) {
-        name = parts[0];
-        handle = parts[1];
-        time = parts.length && timeRe.test(parts[parts.length - 1]) ? parts.pop() : undefined;
-        preview = parts.slice(2).join(', ') || undefined;
-      } else if (parts.length >= 1) {
-        name = parts[0];
-        time = parts.length > 1 && timeRe.test(parts[parts.length - 1]) ? parts.pop() : undefined;
-        preview = parts.slice(1).join(', ') || undefined;
-      } else {
-        name = (el.textContent || '').split('\n')[0].trim();
+      // display names can contain commas ("Patrick, Peter Kuhar and 125 others"),
+      // so take the name from the first innerText line, not from comma-splitting
+      const lines = ((a ? a.innerText : el.innerText) || '').split('\n').map(x => x.trim()).filter(Boolean);
+      const name = lines[0] || '';
+      let time, preview;
+      if (lines.length >= 2) {
+        const rest = lines.slice(1).filter(l => !/^(unread|new)$/i.test(l));
+        const tIdx = [...rest].reverse().findIndex(l => timeRe.test(l));
+        if (tIdx !== -1) time = rest.splice(rest.length - 1 - tIdx, 1)[0];
+        preview = rest.join(' · ') || undefined;
       }
+      // handle lives in aria-description ("Name, @handle, preview, time")
+      const dparts = (el.getAttribute('aria-description') || '').split(',').map(x => x.trim()).filter(Boolean);
+      const handle = dparts.length >= 2 && dparts[1].startsWith('@') ? dparts[1] : undefined;
       const sel = el.getAttribute('data-selected');
       out.push({ id, url: href ? 'https://x.com' + href : undefined, name, handle: handle || undefined, preview: preview || undefined, time: time || undefined, selected: sel === 'true' || undefined });
     }
@@ -200,8 +199,12 @@ async function(args) {
     const ownBubble = bubbles.find(b => (b.className || '').includes('bg-chat-accent') && !(b.querySelector && b.querySelector('a[href*="/status/"]')));
     if (ownBubble) { sender = 'self'; bubble = ownBubble; }
     else if (bubbles.length) bubble = bubbles[0];
+    // "You ..." prefix heuristic (reactions etc.) — only for containers that
+    // have no text node, otherwise an incoming message starting with "You"
+    // ("You know what...") would be misclassified as self.
     const containerText = (el.innerText || '').trim();
-    if (sender !== 'self' && /^(You|Вы)\b/.test(containerText) && !/\b(You|Вы):/.test(containerText)) sender = 'self';
+    const hasTextNode = !!(el.querySelector && el.querySelector('[data-testid^="message-text-"]'));
+    if (sender !== 'self' && !hasTextNode && /^(You|Вы)\b/.test(containerText) && !/\b(You|Вы):/.test(containerText)) sender = 'self';
 
     // media: any non-avatar img / video inside the container. Media wrapped in
     // a status anchor belongs to a shared-post (quote) card; the rest is a
