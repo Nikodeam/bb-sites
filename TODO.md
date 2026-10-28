@@ -25,7 +25,8 @@ Status: working — boards (77), board catalog (OPs + thumbs), full threads (pos
 - **CORS origin quirk:** a.4cdn.org only allows the `boards.4chan.org` origin. The daemon's tab auto-open uses the wrong origin (https://4chan.org), so on a fresh machine run `bb-browser open https://boards.4chan.org/<board>` once — then the adapter matches the existing boards tab. The adapter returns a hint on CORS failure. (2026-10-28)
 - [ ] Rate limit: a.4cdn.org allows ~1 req/sec; rapid successive adapter calls can 429. Error surfaced with hint; no retry logic. (2026-10-28)
 - [ ] Search: 4chan's API has no search — would need desuarchive.org (public JSON) for full-text history search. Not started. (2026-10-28)
-- [ ] **Polymarket** — public CLOB API + gamma API; markets, prices, order book. No login for reads. (queued 2026-10-28)
+- [ ] **Polymarket** — public CLOB API + gamma API; markets, prices, order book. No login for reads. (deferred 2026-10-28 — after Telegram)
+- [ ] **Tor .onion sites adapter** — idea stage: reach non-clearnet sites via local Tor SOCKS proxy (localhost:9050). NOTE: read-only research use only (status mirrors, wikis, indexers); no facilitation of data-purchase / market activity. Needs Tor daemon installed locally. (proposed 2026-10-28)
 - [ ] **Telegram (custom, high value)** — no community adapter exists; TDLib userbot or web-k.telegam session automation. This is where the real circle lives. (identified 2026-10-27)
 
 ## Known quirks (bb-browser CLI / daemon)
