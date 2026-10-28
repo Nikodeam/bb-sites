@@ -1,7 +1,7 @@
 /* @meta
 {
   "name": "twitter/chat",
-  "description": "获取 Twitter DM 对话消息",
+  "description": "获取 Twitter DM 对话消息 (legacy 1.1 API; for the NEW X chat at /i/chat - encrypted conversations - use twitter/xchat instead)",
   "domain": "x.com",
   "args": {
     "conversation_id": {"required": true, "description": "Conversation ID (from URL, e.g. 115897222-2741527221)"},
@@ -15,6 +15,10 @@
 
 async function(args) {
   if (!args.conversation_id) return {error: 'Missing argument: conversation_id', hint: 'Provide conversation ID from URL, e.g. 115897222-2741527221'};
+  // New X chat (encrypted, /i/chat/g... or /i/chat/userA-userB) replaced the legacy DM API:
+  if (/^g\d+$/.test(args.conversation_id) || document.querySelector('[data-testid="xchatEmbedRoute"]')) {
+    return {error: 'This conversation uses the new X chat (encrypted)', hint: 'Use the twitter/xchat adapter instead: bb-browser site twitter/xchat --conversation ' + args.conversation_id};
+  }
   const ct0 = document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('ct0='))?.split('=')[1];
   if (!ct0) return {error: 'No ct0 cookie', hint: 'Not logged into x.com. Open x.com and log in first.'};
 
