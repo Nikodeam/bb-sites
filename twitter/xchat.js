@@ -67,16 +67,18 @@ async function(args) {
       const a = el.tagName === 'A' ? el : el.querySelector('a');
       const href = a ? a.getAttribute('href') : null;
       const desc = el.getAttribute('aria-description') || '';
-      const parts = desc.split(',').map(s => s.trim());
+      const parts = desc.split(',').map(s => s.trim()).filter(Boolean);
       let name, handle, preview, time;
-      if (parts.length >= 4 && parts[1].startsWith('@')) {
-        [name, handle] = parts;
-        time = parts[parts.length - 1];
-        preview = parts.slice(2, parts.length - 1).join(', ');
-      } else if (parts.length >= 3) {
+      const timeRe = /^(?:\d+[mhdw]|now|yesterday|today)$/i;
+      if (parts.length >= 2 && parts[1].startsWith('@')) {
         name = parts[0];
-        time = parts[parts.length - 1];
-        preview = parts.slice(1, parts.length - 1).join(', ');
+        handle = parts[1];
+        time = parts.length && timeRe.test(parts[parts.length - 1]) ? parts.pop() : undefined;
+        preview = parts.slice(2).join(', ') || undefined;
+      } else if (parts.length >= 1) {
+        name = parts[0];
+        time = parts.length > 1 && timeRe.test(parts[parts.length - 1]) ? parts.pop() : undefined;
+        preview = parts.slice(1).join(', ') || undefined;
       } else {
         name = (el.textContent || '').split('\n')[0].trim();
       }
@@ -90,12 +92,19 @@ async function(args) {
   // so values can arrive shifted depending on how the user invoked it.
   // Resolve intent by inspecting the values themselves instead of trusting keys.
   const isMode = (v) => ['list', 'read'].includes(String(v).toLowerCase());
-  const a1 = String(args.conversation ?? '').trim();
-  const a2 = String(args.mode ?? '').trim();
-  const a3 = String(args.scroll_rounds ?? '').trim();
-  let mode = 'read', target = '', rounds = '';
-  if (isMode(a1)) { mode = a1.toLowerCase(); target = isMode(a2) ? '' : a2; rounds = a3; }
-  else { target = a1 || String(args.conv || args.id || args.name || '').trim(); if (isMode(a2)) { mode = a2.toLowerCase(); rounds = a3; } else { rounds = a2 || a3; } }
+  const isRounds = (v) => /^\d+$/.test(String(v));
+  const values = [args.conversation, args.mode, args.scroll_rounds, args.fetch_media]
+    .map(v => String(v ?? '').trim())
+    .filter(Boolean);
+  let mode = 'read', target = '', rounds = '', fetchMedia = '';
+  for (const value of values) {
+    if (!target && !isMode(value) && !isRounds(value) && !/^(1|true|yes|0|false|no)$/i.test(value)) target = value;
+    else if (isMode(value)) mode = value.toLowerCase();
+    else if (isRounds(value) && !rounds) rounds = value;
+    else if (/^(1|true|yes|0|false|no)$/i.test(value)) fetchMedia = value;
+  }
+  if (!target) target = String(args.conv || args.id || args.name || '').trim();
+  args.fetch_media = fetchMedia || args.fetch_media;
   if (mode === 'list') {
     const conversations = listConversations();
     return { mode: 'list', count: conversations.length, conversations, note: 'Read a conversation with: bb-browser site twitter/xchat --conversation <id | url | name>' };
@@ -183,12 +192,16 @@ async function(args) {
     if (seenUuids.has(uuid)) continue;
     seenUuids.add(uuid);
 
-    // sender via bubble class
+    // sender: own bubbles are accent-coloured. Shared-post cards also contain
+    // rounded nodes, so a class-only check marks the other person's card as self.
     let sender = 'other';
     let bubble = null;
     const bubbles = el.querySelectorAll ? [...el.querySelectorAll('[class*="rounded-chat"]')] : [];
-    for (const b of bubbles) { if ((b.className || '').includes('bg-chat-accent')) { sender = 'self'; bubble = b; break; } }
-    if (!bubble && bubbles.length) bubble = bubbles[0];
+    const ownBubble = bubbles.find(b => (b.className || '').includes('bg-chat-accent') && !(b.querySelector && b.querySelector('a[href*="/status/"]')));
+    if (ownBubble) { sender = 'self'; bubble = ownBubble; }
+    else if (bubbles.length) bubble = bubbles[0];
+    const containerText = (el.innerText || '').trim();
+    if (sender !== 'self' && /^(You|Вы)\b/.test(containerText) && !/\b(You|Вы):/.test(containerText)) sender = 'self';
 
     // media: any non-avatar img / video inside the container. Media wrapped in
     // a status anchor belongs to a shared-post (quote) card; the rest is a
