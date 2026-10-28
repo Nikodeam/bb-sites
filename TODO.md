@@ -19,8 +19,12 @@ Status: working — list, read, pagination, media, shared-post cards, sending (f
 ## Adapter: twitter/chat (legacy DM API)
 Status: deprecated-but-guarded. The 1.1 DM endpoint no longer serves conversations that use the new X chat; the adapter detects those (g... ids / xchatEmbedRoute) and redirects to twitter/xchat. Keep it for conversations still on the legacy API, if any exist. (2026-10-28)
 
-## Planned adapters
-- [ ] **4chan** — public JSON API (a.4cdn.org), no login. Boards list, thread list per board, thread reader with reply links, image URLs from /_/ and s. Trivial. (queued 2026-10-28)
+## Adapter: 4chan/read
+Status: working — boards (77), board catalog (OPs + thumbs), full threads (posts, greentext, quote-links, multi-file posts, webm/mp4 with direct i.4cdn.org URLs + sizes).
+
+- **CORS origin quirk:** a.4cdn.org only allows the `boards.4chan.org` origin. The daemon's tab auto-open uses the wrong origin (https://4chan.org), so on a fresh machine run `bb-browser open https://boards.4chan.org/<board>` once — then the adapter matches the existing boards tab. The adapter returns a hint on CORS failure. (2026-10-28)
+- [ ] Rate limit: a.4cdn.org allows ~1 req/sec; rapid successive adapter calls can 429. Error surfaced with hint; no retry logic. (2026-10-28)
+- [ ] Search: 4chan's API has no search — would need desuarchive.org (public JSON) for full-text history search. Not started. (2026-10-28)
 - [ ] **Polymarket** — public CLOB API + gamma API; markets, prices, order book. No login for reads. (queued 2026-10-28)
 - [ ] **Telegram (custom, high value)** — no community adapter exists; TDLib userbot or web-k.telegam session automation. This is where the real circle lives. (identified 2026-10-27)
 
